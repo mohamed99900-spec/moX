@@ -19,6 +19,7 @@ QUESTS = [
     ("games", "العب 3 ألعاب (سلوت/نرد/تخمين...)", 3, 30),
     ("daily", "خد هديتك اليومية", 1, 20),
     ("wins", "اكسب سباق أسئلة في جروب", 1, 40),
+    ("quran", "اقرأ 3 صفحات من المصحف 📖", 3, 25),
 ]
 ALL_BONUS = 60
 
@@ -133,6 +134,48 @@ async def claim_cb(callback: types.CallbackQuery):
     if lvl:
         extra += "\n\n" + persona.levelup_line(callback.from_user, lvl)
     await show(callback, text + extra, kb)
+
+
+# ------------------------------------------------------------------
+# 💸 تحويل نقاط بين الأعضاء (بالرد على رسالة): تحويل 50
+# ------------------------------------------------------------------
+import re as _re
+
+TRANSFER_RE = _re.compile(r"^(?:تحويل|حول|اهدي|اهداء|ابعت)\s+(\d{1,5})$")
+TRANSFER_FEE = 0.05
+
+
+def transfer_filter(m: types.Message):
+    t = (m.text or "").strip()
+    mt = TRANSFER_RE.match(t)
+    r = m.reply_to_message
+    if not mt or not r or not r.from_user or not m.from_user:
+        return False
+    return {"amount": int(mt.group(1))}
+
+
+@extras_router.message(transfer_filter)
+async def transfer_points(message: types.Message, amount: int):
+    sender, target = message.from_user, message.reply_to_message.from_user
+    if target.is_bot or target.id == sender.id:
+        await message.reply("😂 مينفعش تحوّل لنفسك ولا للبوت يا باشا!")
+        return
+    if amount < 10:
+        await message.reply("⚠️ أقل مبلغ للتحويل 10 نقط.")
+        return
+    u = get_user(sender)
+    if u["score"] < amount:
+        await message.reply(f"💸 رصيدك ({u['score']}) مش كفاية يا {esc(sender.first_name)}!")
+        return
+    fee = max(1, int(amount * TRANSFER_FEE))
+    add_points(sender, -amount)
+    lvl = add_points(target, amount - fee, message.chat)
+    await message.reply(
+        f"💸 <b>{esc(sender.first_name)}</b> حوّل <b>{amount}</b> نقطة لـ <b>{esc(target.first_name)}</b>\n"
+        f"🧾 رسوم التحويل ({int(TRANSFER_FEE * 100)}%): {fee} | وصله: <b>{amount - fee}</b> 🎁\n"
+        f"💰 رصيدك دلوقتي: <b>{u['score']}</b>", parse_mode="HTML")
+    if lvl:
+        await message.answer(persona.levelup_line(target, lvl), parse_mode="HTML")
 
 
 # ------------------------------------------------------------------
