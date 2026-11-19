@@ -12,17 +12,9 @@ from aiogram.types import (InlineKeyboardMarkup, InlineKeyboardButton as Btn, FS
 from aiogram.exceptions import TelegramForbiddenError
 
 from group_admin import is_user_admin
+from quran_data import norm_ar
 from storage import DATA, save_data
 from utils import esc, show, safe_answer
-
-
-def norm_ar(text: str) -> str:
-    """Normalize Arabic text used for matching city names."""
-    text = re.sub(r"[\u064b-\u065f\u0670\ufe70-\ufe7f\ufe7f]", "", text or "")
-    text = re.sub(r"[أإآٱ]", "ا", text)
-    text = re.sub(r"[ىي]", "ي", text)
-    text = text.replace("ة", "ه").replace("ؤ", "و").replace("ئ", "ي")
-    return "".join(text.split())
 
 log = logging.getLogger("mox.prayer")
 prayer_router = Router()
@@ -376,9 +368,23 @@ async def send_adhan(bot, chat_id: int, prayer: str, city: str, test: bool = Fal
         await bot.send_message(
             chat_id, "ℹ️ <i>(صوت الأذان مش متاح دلوقتي — المشرف يحط ملف adhan.mp3 في فولدر البوت أو يضبط ADHAN_URL)</i>",
             parse_mode="HTML")
-    kb = InlineKeyboardMarkup(inline_keyboard=[[
-        Btn(text="📖 المصحف", callback_data="quran_menu"), Btn(text="🤲 أذكار", callback_data="duas_menu")]])
-    await bot.send_message(chat_id, DUA_AFTER, reply_markup=kb, parse_mode="HTML")
+    extra = []
+    if prayer == "Fajr":
+        extra = [Btn(text="🌅 أذكار الصباح", callback_data="du:0")]
+    elif prayer == "Asr":
+        extra = [Btn(text="🌇 أذكار المساء", callback_data="du:1")]
+    rows = [[Btn(text="📖 المصحف", callback_data="quran_menu"), Btn(text="🤲 أذكار", callback_data="duas_menu")]]
+    if extra:
+        rows.insert(0, extra)
+    await bot.send_message(chat_id, DUA_AFTER, reply_markup=InlineKeyboardMarkup(inline_keyboard=rows), parse_mode="HTML")
+    # 🕋 تذكير الجمعة بعد أذان الفجر
+    if prayer == "Fajr" and not test and datetime.now(ZoneInfo(CITIES[city][3])).weekday() == 4:
+        fk = InlineKeyboardMarkup(inline_keyboard=[[
+            Btn(text="🎧 استمع لسورة الكهف", callback_data="qa:18"), Btn(text="📖 اقرأ الكهف", callback_data="qr:18:0")]])
+        await bot.send_message(
+            chat_id,
+            "🕋 <b>جمعة مباركة يا جماعة!</b> 🤍\nلا تنسوا: سورة الكهف، والإكثار من الصلاة على النبي ﷺ، "
+            "وساعة الاستجابة قبل المغرب 🤲", reply_markup=fk, parse_mode="HTML")
 
 
 async def _fire(bot, chat_id: str, prayer: str, city: str):
