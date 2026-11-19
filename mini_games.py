@@ -9,20 +9,9 @@ from aiogram.filters import Command, or_f
 from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton as Btn
 
 import persona
+import extras
 from storage import get_user, add_points, save_data
 from utils import esc, safe_answer, safe_edit
-
-
-class _ExtrasFallback:
-    @staticmethod
-    def bump(user: dict, key: str) -> None:
-        """Optional extras hook; keep mini-games usable if extras is unavailable."""
-
-
-try:
-    import extras as extras  # type: ignore[import-not-found]
-except ImportError:
-    extras = _ExtrasFallback()
 
 log = logging.getLogger("mox.mini")
 mini_router = Router()
@@ -81,9 +70,11 @@ def games_menu_kb():
          Btn(text="🧩 فك الكلمة", callback_data="g_word")],
         [Btn(text="🧮 حساب سريع", callback_data="g_math"),
          Btn(text="📜 كمّل المثل", callback_data="g_proverb")],
-        [Btn(text="🤔 لو خيروك", callback_data="g_wyr"),
-         Btn(text="😂 نكتة", callback_data="joke")],
-        [Btn(text="🏠 القائمة الرئيسية", callback_data="main_menu")],
+        [Btn(text="🔤 خمن الإيموجي", callback_data="g_emoji"),
+         Btn(text="✅❌ صح ولا غلط", callback_data="g_tf")],
+        [Btn(text="🎡 عجلة الحظ (مجانية)", callback_data="g_wheel"),
+         Btn(text="🤔 لو خيروك", callback_data="g_wyr")],
+        [Btn(text="😂 نكتة", callback_data="joke"), Btn(text="🏠 الرئيسية", callback_data="main_menu")],
     ])
 
 
@@ -93,6 +84,7 @@ GAMES_TEXT = (
     f"🎰 <b>سلوت</b> ({SLOT_BET}) • 🎲 <b>نرد</b> • 🎯⚽🏀🎳 <b>رياضات الحظ</b> ({SPORT_BET}): ارهن وجرب حظك\n"
     "✂️ <b>حجر ورقة مقص</b>: كسبني تاخد 10 نقط\n"
     "🔢 تخمين • ⚡ أسرع كاتب • 🧩 فك الكلمة • 🧮 حساب • 📜 كمّل المثل: ألعاب جماعية\n"
+    "🔤 <b>خمن الإيموجي</b> • ✅❌ <b>صح ولا غلط</b> (الكل بيشارك) • 🎡 <b>عجلة الحظ</b> (مجانية كل 4 ساعات)\n"
     "🤔 <b>لو خيروك</b>: تصويت يولّع الجروب 🔥\n\n"
     "💡 خلّص <b>المهام اليومية</b> وخد بونص!"
 )
@@ -329,6 +321,24 @@ SCRAMBLE_WORDS = [
     "مكرونة", "ملوخية", "جامعة", "صاروخ", "شاطئ", "عمارة", "ثلاجة", "غسالة",
 ]
 
+EMOJI_PUZZLES = [
+    ("🍚🍝🥫🧅", "كشري", []), ("🧆🥙", "فلافل", ["طعمية", "الطعمية", "الفلافل"]),
+    ("🐪🏜️", "جمل", ["الجمل"]), ("🔺🏜️🌅", "هرم", ["الهرم", "الاهرامات", "اهرامات", "الأهرامات"]),
+    ("📱🍎", "ايفون", ["آيفون", "iphone", "ابل", "أبل"]),
+    ("⚽🏆🌍", "كاس العالم", ["كأس العالم", "المونديال", "كاس العالم"]),
+    ("🌙🍽️🕌", "رمضان", ["شهر رمضان"]), ("🦁👑", "الاسد الملك", ["ملك الغابة", "الأسد الملك", "الاسد", "الأسد"]),
+    ("🎂🕯️", "تورتة", ["كيكة", "تورته", "عيد ميلاد", "كيك"]), ("📚✏️🏫", "مدرسة", ["المدرسة"]),
+    ("👨‍⚕️💉🏥", "مستشفى", ["المستشفى", "دكتور"]), ("🔑🚪", "مفتاح", ["المفتاح"]),
+    ("☔☁️", "مطر", ["المطر", "شتا", "الشتا", "شتاء", "الشتاء"]), ("🐎🏇", "حصان", ["الحصان"]),
+    ("🥛🐄", "لبن", ["حليب", "اللبن", "الحليب"]), ("🍞🥖", "عيش", ["خبز", "العيش", "الخبز"]),
+    ("🍉☀️", "بطيخ", ["البطيخ"]), ("🎬🍿", "سينما", ["فيلم", "السينما"]),
+    ("💡🔌", "كهرباء", ["الكهرباء", "نور"]), ("🖥️⌨️🖱️", "كمبيوتر", ["الكمبيوتر", "حاسوب", "لابتوب", "لاب توب"]),
+    ("⌚⏰", "ساعة", ["الساعة"]), ("🐍🏜️", "ثعبان", ["الثعبان", "تعبان"]),
+    ("🍵🌿", "شاي", ["الشاي", "شاى"]), ("🌹❤️", "ورد", ["وردة", "الورد", "ورده"]),
+    ("✈️🧳", "مطار", ["المطار", "سفر", "طيارة"]), ("🚂🛤️", "قطر", ["قطار", "القطر", "القطار"]),
+    ("🏠🔥🚒", "حريق", ["الحريق", "مطافي", "المطافي"]), ("🎤🎶", "اغنية", ["أغنية", "غنوة", "اغنيه", "مغني"]),
+]
+
 _AR_NORM = str.maketrans({"أ": "ا", "إ": "ا", "آ": "ا", "ى": "ي", "ة": "ه"})
 _TASHKEEL = re.compile(r"[\u064B-\u0652\u0640]")
 
@@ -370,6 +380,7 @@ async def start_word(msg: types.Message, kind: str):
     if g and time.time() - g["ts"] < WORD_TTL:
         await msg.answer("⚡ فيه لعبة شغالة، خلصوها الأول! 😅")
         return
+    alts = []
     tail = lambda pts: f"\n\n💎 الجائزة: {pts} نقطة | ⏱️ {WORD_TTL} ثانية"
     if kind == "type":
         ans = random.choice(PROVERBS) if random.random() < 0.7 else "".join(
@@ -396,6 +407,10 @@ async def start_word(msg: types.Message, kind: str):
         pts = 15
         text = (f"📜 <b>كمّل المثل!</b>\nأول واحد يكتب الكلمة الناقصة:\n\n"
                 f"<b>{esc(' '.join(words[:-1]))} ... ؟</b>" + tail(pts))
+    elif kind == "emoji":
+        emo, ans, alts = random.choice(EMOJI_PUZZLES)
+        pts = 15
+        text = f"🔤 <b>خمن الإيموجي!</b>\nإيه الكلمة اللي بتعبّر عنها الإيموجيز دي؟\n\n<b>{emo}</b>" + tail(pts)
     else:
         ans = random.choice(SCRAMBLE_WORDS)
         letters = list(ans)
@@ -405,7 +420,8 @@ async def start_word(msg: types.Message, kind: str):
                 break
         pts = 20
         text = f"🧩 <b>فك الكلمة!</b>\nرتب الحروف دي وكوّن كلمة:\n\n<b>{' - '.join(letters)}</b>" + tail(pts)
-    tok = {"answer": ans, "points": pts, "ts": time.time(), "kind": kind}
+    tok = {"answer": ans, "points": pts, "ts": time.time(), "kind": kind,
+           "alts": {norm(x) for x in alts}}
     WORDG[cid] = tok
     await msg.answer(text, parse_mode="HTML")
     asyncio.create_task(_expire(msg.bot, WORDG, cid, tok, WORD_TTL,
@@ -449,6 +465,17 @@ async def proverb_cb(callback: types.CallbackQuery):
     await start_word(callback.message, "proverb")
 
 
+@mini_router.message(or_f(Command("emoji"), F.text.in_(["خمن الايموجي", "خمن الإيموجي", "ايموجي", "إيموجي"])))
+async def emoji_msg(message: types.Message):
+    await start_word(message, "emoji")
+
+
+@mini_router.callback_query(F.data == "g_emoji")
+async def emoji_cb(callback: types.CallbackQuery):
+    await callback.answer()
+    await start_word(callback.message, "emoji")
+
+
 @mini_router.callback_query(F.data == "g_guess")
 async def guess_cb(callback: types.CallbackQuery):
     await callback.answer()
@@ -467,6 +494,11 @@ async def word_cb(callback: types.CallbackQuery):
     await start_word(callback.message, "scramble")
 
 
+def _hit(w: dict, t: str) -> bool:
+    n = norm(t)
+    return n == norm(w["answer"]) or n in w.get("alts", ())
+
+
 def game_filter(message: types.Message):
     """يلتقط الرسالة فقط لو هي تخمين/إجابة للعبة شغالة، عشان ما نبلعش باقي الكلام."""
     if not message.text or not message.from_user or message.from_user.is_bot:
@@ -478,7 +510,7 @@ def game_filter(message: types.Message):
     private = message.chat.type == "private"
     now = time.time()
     w = WORDG.get(cid)
-    if w and now - w["ts"] < WORD_TTL and (private or norm(t) == norm(w["answer"])):
+    if w and now - w["ts"] < WORD_TTL and (private or _hit(w, t)):
         return True
     s = GUESS.get(cid)
     if s and now - s["ts"] < GUESS_TTL and t.isdigit():
@@ -495,7 +527,7 @@ async def game_answer(message: types.Message):
 
     w = WORDG.get(cid)
     if w and now - w["ts"] < WORD_TTL:
-        if norm(t) == norm(w["answer"]):
+        if _hit(w, t):
             WORDG.pop(cid, None)
             took = now - w["ts"]
             played(get_user(user))
@@ -528,6 +560,155 @@ async def game_answer(message: types.Message):
             await message.reply(random.choice(["⬆️ أكبر من كده!", "⬆️ فوق شوية يا باشا", "⬆️ أعلى، لسه بدري 😂"]))
         else:
             await message.reply(random.choice(["⬇️ أصغر من كده!", "⬇️ نزّل شوية يا معلم", "⬇️ أقل، انت طيرت الرقم 😂"]))
+
+
+# ==================================================================
+#                      ✅❌ صح ولا غلط (الكل بيشارك)
+# ==================================================================
+TF = [
+    ("الحوت الأزرق أكبر حيوان على وجه الأرض", True), ("الماء يغلي عند 100 درجة مئوية عند مستوى سطح البحر", True),
+    ("الأسد هو أسرع حيوان بري", False), ("العنكبوت من الحشرات", False), ("القلب البشري له أربع حجرات", True),
+    ("نهر النيل يصب في البحر الأحمر", False), ("عاصمة أستراليا هي كانبرا", True), ("عاصمة تركيا هي إسطنبول", False),
+    ("الأخطبوط له ثلاثة قلوب", True), ("الخفاش من الطيور", False), ("الرمز الكيميائي للذهب هو Au", True),
+    ("المريخ هو أقرب كوكب للشمس", False), ("أعلى قمة في العالم هي إفرست", True), ("7 × 8 = 54", False),
+    ("القمر يدور حول الأرض", True), ("عدد سور القرآن الكريم 114 سورة", True), ("سورة البقرة هي أقصر سورة في القرآن", False),
+    ("سورة الكوثر هي أقصر سورة في القرآن", True), ("عدد أركان الإسلام خمسة", True),
+    ("قناة السويس تربط البحر المتوسط بالبحر الأحمر", True), ("أهرامات الجيزة بُنيت في عصر الدولة الحديثة", False),
+    ("فازت مصر بكأس الأمم الأفريقية 7 مرات", True), ("محمد صلاح بدأ مسيرته الأوروبية مع ليفربول", False),
+    ("الأهلي هو أكثر الأندية المصرية فوزاً بالدوري", True), ("اللغة العربية تُكتب من اليمين إلى اليسار", True),
+    ("جمع كلمة «كتاب» هو «كتابات»", False), ("الدلفين من الثدييات", True), ("البطريق يعيش في القطب الشمالي", False),
+    ("الدب القطبي يعيش في القطب الشمالي", True), ("الجمل يخزن الماء في سنامه", False), ("الضوء أسرع من الصوت", True),
+    ("الإنسان يستخدم 10% فقط من دماغه", False), ("الفراشات تتذوق الطعام بأرجلها", True), ("الذهب أخف من الحديد", False),
+    ("الألماس يتكون من الكربون", True), ("أكبر كواكب المجموعة الشمسية هو زحل", False),
+    ("كوكب الزهرة هو أسخن كواكب المجموعة الشمسية", True), ("عدد كواكب المجموعة الشمسية ثمانية", True),
+    ("مؤسس جوجل هو بيل غيتس", False), ("مؤسس تيليجرام هو بافل دوروف", True),
+    ("HTML هي لغة برمجة لإدارة قواعد البيانات", False), ("عاصمة المغرب هي الرباط", True),
+    ("عاصمة السودان هي أم درمان", False), ("الصحراء الكبرى أكبر صحراء حارة في العالم", True),
+    ("نهر الأمازون يقع في قارة أفريقيا", False), ("ليلة القدر في شهر رمضان", True),
+    ("المسجد الحرام يقع في المدينة المنورة", False), ("بيليه فاز بكأس العالم ثلاث مرات", True),
+    ("عدد لاعبي الفريق في كرة القدم داخل الملعب 12 لاعباً", False), ("البرتقال غني بفيتامين C", True),
+]
+TFG: dict = {}
+TF_SECONDS = 20
+TF_POINTS = 10
+
+
+def tf_kb():
+    return InlineKeyboardMarkup(inline_keyboard=[[
+        Btn(text="✅ صح", callback_data="tf:1"), Btn(text="❌ غلط", callback_data="tf:0")]])
+
+
+async def tf_finish(msg: types.Message, key):
+    await asyncio.sleep(TF_SECONDS)
+    st = TFG.pop(key, None)
+    if not st:
+        return
+    right = st["ans"]
+    winners, lvls = [], []
+    for uid, (vote, user) in st["votes"].items():
+        u = get_user(user)
+        if vote == right:
+            u["correct"] += 1
+            extras.bump(u, "correct")
+            lvl = add_points(user, TF_POINTS, msg.chat)
+            winners.append(esc(user.first_name))
+            if lvl:
+                lvls.append((user, lvl))
+        else:
+            u["wrong"] += 1
+    save_data()
+    total = len(st["votes"])
+    body = f"⏰ <b>الوقت خلص!</b>\nالإجابة الصحيحة: <b>{'✅ صح' if right else '❌ غلط'}</b>\n\n"
+    if total == 0:
+        body += "محدش شارك 😴 يا جماعة فين الحماس؟"
+    else:
+        body += f"👥 شارك <b>{total}</b> | 🎉 جاوب صح <b>{len(winners)}</b> (+{TF_POINTS} نقطة لكل واحد)\n"
+        if winners:
+            body += "🏆 " + "، ".join(winners[:15])
+    await safe_edit(msg, body, again_kb("g_tf", "✅❌ سؤال تاني"))
+    for user, lvl in lvls:
+        await lvl_msg(msg, user, lvl)
+
+
+async def start_tf(msg: types.Message):
+    st, ans = random.choice(TF)
+    sent = await msg.answer(
+        f"✅❌ <b>صح ولا غلط؟</b>\n\n<b>{esc(st)}</b>\n\n⏱️ معاكم <b>{TF_SECONDS} ثانية</b> — إجاباتكم سرية لحد "
+        f"ما الوقت يخلص! 💎 +{TF_POINTS} لكل واحد يجاوب صح",
+        reply_markup=tf_kb(), parse_mode="HTML")
+    key = (sent.chat.id, sent.message_id)
+    TFG[key] = {"ans": ans, "votes": {}}
+    asyncio.create_task(tf_finish(sent, key))
+
+
+@mini_router.callback_query(F.data.startswith("tf:"))
+async def tf_vote(callback: types.CallbackQuery):
+    key = (callback.message.chat.id, callback.message.message_id)
+    st = TFG.get(key)
+    if not st:
+        await callback.answer("⌛ السؤال ده خلص!", show_alert=True)
+        return
+    if callback.from_user.id in st["votes"]:
+        await callback.answer("انت جاوبت قبل كده 😉", show_alert=True)
+        return
+    st["votes"][callback.from_user.id] = (callback.data.endswith("1"), callback.from_user)
+    await callback.answer("🤫 اتسجلت إجابتك! النتيجة لما الوقت يخلص")
+
+
+@mini_router.message(or_f(Command("tf"), F.text.in_(["صح ولا غلط", "صح او غلط", "صح أو غلط"])))
+async def tf_msg(message: types.Message):
+    await start_tf(message)
+
+
+@mini_router.callback_query(F.data == "g_tf")
+async def tf_cb(callback: types.CallbackQuery):
+    await callback.answer()
+    await start_tf(callback.message)
+
+
+# ==================================================================
+#                   🎡 عجلة الحظ (لفة مجانية كل 4 ساعات)
+# ==================================================================
+WHEEL_HOURS = 4
+WHEEL = [(0, "💨 فاضية... معلش!", 22), (10, "🍀 +10", 28), (20, "😎 +20", 20), (50, "🔥 +50", 15),
+         (100, "💎 +100", 9), (250, "👑 +250", 4), (500, "🎰 جاكبوت +500!!", 2)]
+
+
+async def play_wheel(msg: types.Message, user: types.User):
+    u = get_user(user)
+    now = time.time()
+    left = u.get("last_spin", 0) + WHEEL_HOURS * 3600 - now
+    if left > 0:
+        h, m = int(left // 3600), int((left % 3600) // 60)
+        await msg.answer(f"⏳ العجلة لسه بتبرد يا {esc(user.first_name)}! ارجع بعد <b>{h} ساعة و{m} دقيقة</b> 🎡",
+                         parse_mode="HTML")
+        return
+    u["last_spin"] = now
+    prize = random.choices(WHEEL, weights=[w[2] for w in WHEEL])[0]
+    wait = await msg.answer("🎡 العجلة بتلف... 🌀")
+    await asyncio.sleep(2)
+    lvl = None
+    if prize[0]:
+        lvl = add_points(user, prize[0], msg.chat)
+    else:
+        save_data()
+    played(u)
+    await safe_edit(wait, f"🎡 <b>{prize[1]}</b>\n💰 رصيدك: <b>{u['score']}</b>\n\n"
+                          f"<i>(لفة تانية بعد {WHEEL_HOURS} ساعات)</i>",
+                    InlineKeyboardMarkup(inline_keyboard=[
+                        [Btn(text="🎮 العاب", callback_data="games"), Btn(text="🏠 الرئيسية", callback_data="main_menu")]]))
+    await lvl_msg(msg, user, lvl)
+
+
+@mini_router.message(or_f(Command("wheel"), F.text.in_(["عجلة الحظ", "العجلة", "عجلة"])))
+async def wheel_msg(message: types.Message):
+    await play_wheel(message, message.from_user)
+
+
+@mini_router.callback_query(F.data == "g_wheel")
+async def wheel_cb(callback: types.CallbackQuery):
+    await callback.answer()
+    await play_wheel(callback.message, callback.from_user)
 
 
 # ==================================================================
