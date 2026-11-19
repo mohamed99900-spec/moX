@@ -5,7 +5,6 @@ import time
 import random
 import asyncio
 import logging
-import importlib
 from datetime import datetime, timedelta, timezone
 
 from aiogram import Router, types, F
@@ -13,27 +12,10 @@ from aiogram.filters import Command, or_f
 from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton as Btn
 
 import persona
-
-
-class _ExtrasFallback:
-    @staticmethod
-    def bump(user: dict, key: str):
-        """Keep optional extra counters safe when extras.py is unavailable."""
-        return user.get(key, 0)
-
-    @staticmethod
-    def badges_text(user: dict) -> str:
-        return user.get("badges_text", "—")
-
-
-try:
-    extras = importlib.import_module("extras")
-except ImportError:
-    extras = _ExtrasFallback()
-
+import extras
 from storage import (
     DATA, get_user, add_points, save_data, level_of,
-    top_global, top_group, top_groups, rank_in, title_of,
+    top_global, top_group, top_groups, top_week, rank_in, title_of,
 )
 from utils import esc, show, safe_edit
 
@@ -356,7 +338,8 @@ def lb_keyboard(tab: str):
     def b(label, t):
         return Btn(text=("• " if t == tab else "") + label, callback_data=f"lb:{t}")
     return InlineKeyboardMarkup(inline_keyboard=[
-        [b("🌍 العالم", "g"), b("🏘️ الجروب", "c"), b("🏰 الجروبات", "t")],
+        [b("🌍 العالم", "g"), b("🏘️ الجروب", "c")],
+        [b("📅 الأسبوع", "w"), b("🏰 الجروبات", "t")],
         [Btn(text="🔥 العب", callback_data="start_challenges"), Btn(text="🏠 الرئيسية", callback_data="main_menu")],
     ])
 
@@ -386,6 +369,17 @@ async def render_lb(target, user_obj: types.User, chat: types.Chat, tab: str):
         pos = rank_in(allrows, user_obj.id)
         if pos and pos > 10:
             text += f"\n📍 ترتيبك في الجروب: <b>#{pos}</b>"
+    elif tab == "w":
+        top, allrows = top_week()
+        text = "📅 <b>متصدري الأسبوع</b> (بيتصفّر كل أسبوع — الكل عنده فرصة!) 🔥\n\n"
+        if not top:
+            text += "الأسبوع لسه بادئ! العب واكسب نقط وكن أول واحد 🏁"
+        for i, (uid, u) in enumerate(top):
+            lvl = level_of(u["score"])[0]
+            text += fmt_row(i, u["name"], u["week"]["pts"], f" {lvl[2]}" + _t(uid))
+        pos = rank_in(allrows, user_obj.id)
+        if pos:
+            text += f"\n📍 ترتيبك هذا الأسبوع: <b>#{pos}</b>"
     elif tab == "t":
         top, _ = top_groups()
         text = "🏰 <b>أقوى الجروبات (مجموع نقط الأعضاء)</b>\n\n"
