@@ -1,5 +1,6 @@
 """المصحف والقرآن الكريم بصوت الشيخ مشاري راشد العفاسي."""
 import re
+import math
 import random
 import asyncio
 import logging
@@ -13,13 +14,10 @@ from aiogram.types import (InlineKeyboardMarkup, InlineKeyboardButton as Btn,
                            BufferedInputFile)
 
 import persona
-try:
-    from .quran_data import (SURAHS, TOTAL_AYAT, DATA_OK, SAFE_MAKKI, SAFE_MADANI, locate,  # type: ignore[reportMissingImports]
-                             ayah_audio, surah_audio_urls, find_surah, ar_digits)
-except ImportError:
-    from quran_data import (SURAHS, TOTAL_AYAT, DATA_OK, SAFE_MAKKI, SAFE_MADANI, locate,  # type: ignore[reportMissingImports]
-                            ayah_audio, surah_audio_urls, find_surah, ar_digits)
-from storage import get_user, add_points, save_data
+import extras
+from quran_data import (SURAHS, TOTAL_AYAT, DATA_OK, SAFE_MAKKI, SAFE_MADANI, locate,
+                        ayah_audio, surah_audio_urls, find_surah, ar_digits)
+from storage import get_user, add_points, save_data, audio_get, audio_put
 from utils import esc, show, safe_edit, safe_answer
 
 log = logging.getLogger("mox.quran")
@@ -95,44 +93,185 @@ def chunk_surah(ayahs, limit=3300):
 # ==================================================================
 #                       إرسال الصوت (العفاسي)
 # ==================================================================
-async def download(url: str):
-    async with _dl_lock:
-        try:
-            async with http().get(url, timeout=aiohttp.ClientTimeout(total=300)) as r:
-                if r.status != 200:
-                    return None
-                size = int(r.headers.get("Content-Length") or 0)
-                if size > MAX_DOWNLOAD:
-                    return "big"
+PART_BYTES = 44 * 1024 * 1024       # أقل من حد رفع تيليجرام (50MB)
+SMALL_URL_LIMIT = 19 * 1024 * 1024  # تيليجرام بيسحب بنفسه من الرابط لحد 20MB
+
+
+class Remote:
+    """ملف بعيد بنقرا منه بالـ Range (أو بالكامل لو السيرفر مابيدعمش Range)."""
+
+    def __init__(self, url):
+        self.url = url
+        self.size = 0
+        self.range = False
+        self.full = None
+
+    async def open(self):
+        async with http().get(self.url, headers={"Range": "bytes=0-0"},
+                              timeout=aiohttp.ClientTimeout(total=60)) as r:
+            if r.status == 206:
+                self.size = int(r.headers.get("Content-Range", "bytes 0-0/0").split("/")[-1])
+                self.range = True
+            elif r.status == 200:
+                self.size = int(r.headers.get("Content-Length") or 0)
+            else:
+                raise RuntimeError(f"HTTP {r.status}")
+        return self
+
+    async def read(self, start, length):
+        if self.range:
+            end = start + length - 1
+            if self.size:
+                end = min(end, self.size - 1)
+            async with http().get(self.url, headers={"Range": f"bytes={start}-{end}"},
+                                  timeout=aiohttp.ClientTimeout(total=900)) as r:
+                if r.status not in (200, 206):
+                    raise RuntimeError(f"HTTP {r.status}")
                 data = await r.read()
-                return "big" if len(data) > MAX_DOWNLOAD else data
-        except Exception as e:
-            log.warning("download failed %s: %s", url, e)
-            return None
+                if r.status == 206:
+                    return data
+                self.full, self.range = data, False
+                return data[start:start + length]
+        if self.full is None:
+            async with http().get(self.url, timeout=aiohttp.ClientTimeout(total=1800)) as r:
+                if r.status != 200:
+                    raise RuntimeError(f"HTTP {r.status}")
+                self.full = await r.read()
+            self.size = len(self.full)
+        return self.full[start:start + length]
 
 
-async def send_audio_smart(msg: types.Message, urls: list, title: str, caption: str, kb=None) -> str:
-    """بيجرب الإرسال بالرابط، وبعدين بالتحميل والرفع. يرجع: ok / big / fail."""
+async def iter_parts(remote: Remote):
+    """بيقسم الملف أجزاء ≤44MB، وبيقطع على بداية فريم MP3 عشان كل جزء يشتغل نضيف."""
+    pos, size = 0, remote.size
+    while pos < size:
+        data = await remote.read(pos, PART_BYTES + 4096)
+        if size - pos <= PART_BYTES + 4096:
+            part = data
+        else:
+            cut = PART_BYTES
+            j = data.find(b"\xff\xfb", PART_BYTES)
+            if 0 < j < PART_BYTES + 4096:
+                cut = j
+            part = data[:cut]
+        if not part:
+            break
+        yield part
+        pos += len(part)
+
+
+async def send_audio_smart(msg: types.Message, urls: list, title: str, caption: str, kb=None, cache_key=None) -> str:
+    """للملفات الصغيرة (الآيات): كاش file_id ← رابط مباشر ← تحميل ورفع."""
+    if cache_key:
+        ids = audio_get(cache_key)
+        if ids:
+            try:
+                await msg.answer_audio(audio=ids[0], caption=caption, reply_markup=kb, parse_mode="HTML")
+                return "ok"
+            except Exception as e:
+                log.info("cached file_id failed: %s", e)
     for url in urls[:2]:
         try:
-            await msg.answer_audio(audio=url, title=title, performer=RECITER, caption=caption,
-                                   reply_markup=kb, parse_mode="HTML")
+            m = await msg.answer_audio(audio=url, title=title, performer=RECITER, caption=caption,
+                                       reply_markup=kb, parse_mode="HTML")
+            if cache_key and m.audio:
+                audio_put(cache_key, [m.audio.file_id])
             return "ok"
         except Exception as e:
             log.info("audio by url failed (%s): %s", url, e)
-        data = await download(url)
-        if data == "big":
-            return "big"
-        if data:
-            try:
-                await msg.answer_audio(
-                    audio=BufferedInputFile(data, filename=f"{title}.mp3"),
-                    title=title, performer=RECITER, caption=caption,
-                    reply_markup=kb, parse_mode="HTML")
+        try:
+            remote = await Remote(url).open()
+            if 0 < remote.size <= PART_BYTES:
+                data = await remote.read(0, remote.size)
+                m = await msg.answer_audio(audio=BufferedInputFile(data, filename=f"{title}.mp3"), title=title,
+                                           performer=RECITER, caption=caption, reply_markup=kb, parse_mode="HTML")
+                if cache_key and m.audio:
+                    audio_put(cache_key, [m.audio.file_id])
                 return "ok"
-            except Exception as e:
-                log.warning("upload failed: %s", e)
+        except Exception as e:
+            log.warning("upload failed: %s", e)
     return "fail"
+
+
+async def send_surah_audio(msg: types.Message, n: int) -> str:
+    """بيبعت السورة كاملة (حتى البقرة!) — الطويلة بتتقسّم لأجزاء، وبتتخزن عشان المرة الجاية فورية."""
+    s = SURAHS[n - 1]
+    name = s["name"]
+    caption = f"🎧 <b>سورة {esc(name)}</b>\n{RECITER}"
+    kb = InlineKeyboardMarkup(inline_keyboard=[
+        [Btn(text="📖 اقرأ السورة", callback_data=f"qr:{n}:0"), Btn(text="📚 الفهرس", callback_data="qi:0")]])
+    key = f"s{n}"
+
+    ids = audio_get(key)
+    if ids:
+        sent_all = True
+        for i, fid in enumerate(ids):
+            cap = caption + (f"\n📦 الجزء {i + 1}/{len(ids)}" if len(ids) > 1 else "")
+            try:
+                await msg.answer_audio(audio=fid, caption=cap, parse_mode="HTML",
+                                       reply_markup=kb if i == len(ids) - 1 else None)
+            except Exception as e:
+                log.info("cached surah part failed: %s", e)
+                sent_all = False
+                break
+        if sent_all:
+            return "ok"
+
+    wait = await msg.answer(f"⏳ بجهزلك سورة <b>{esc(name)}</b> بصوت العفاسي... ثواني 🎧", parse_mode="HTML")
+    result = "fail"
+    try:
+        async with _dl_lock:
+            for url in surah_audio_urls(n):
+                try:
+                    remote = await Remote(url).open()
+                except Exception as e:
+                    log.info("open failed %s: %s", url, e)
+                    continue
+                if remote.size <= 0:
+                    continue
+                if remote.size <= SMALL_URL_LIMIT:
+                    try:
+                        m = await msg.answer_audio(audio=url, title=f"سورة {name}", performer=RECITER,
+                                                   caption=caption, reply_markup=kb, parse_mode="HTML")
+                        audio_put(key, [m.audio.file_id])
+                        result = "ok"
+                        break
+                    except Exception as e:
+                        log.info("url send failed: %s", e)
+                total = max(1, math.ceil(remote.size / PART_BYTES))
+                if total > 1:
+                    await safe_edit(wait, f"⏳ السورة طويلة ({remote.size // (1024 * 1024)} MB) — "
+                                          f"هبعتها على <b>{total} أجزاء</b>، استنى شوية 🎧")
+                ids, idx = [], 0
+                try:
+                    async for part in iter_parts(remote):
+                        idx += 1
+                        title = f"سورة {name}" + (f" ({idx}/{total})" if total > 1 else "")
+                        cap = caption + (f"\n📦 الجزء {idx}/{total}" if total > 1 else "")
+                        m = await msg.answer_audio(
+                            audio=BufferedInputFile(part, filename=f"{title}.mp3"), title=title,
+                            performer=RECITER, caption=cap, parse_mode="HTML",
+                            reply_markup=kb if total == 1 else None)
+                        ids.append(m.audio.file_id)
+                        if total > 1 and idx < total:
+                            await safe_edit(wait, f"⏳ اتبعت {idx}/{total}... كمّل معايا 🎧")
+                    audio_put(key, ids)
+                    if total > 1:
+                        await msg.answer(f"✅ خلصت سورة <b>{esc(name)}</b> كاملة 🤍", reply_markup=kb, parse_mode="HTML")
+                    result = "ok"
+                    break
+                except Exception as e:
+                    log.warning("surah upload failed (%s parts sent): %s", len(ids), e)
+                    if ids:
+                        result = "partial"
+                        break
+    except Exception as e:
+        log.warning("surah send crashed: %s", e)
+    try:
+        await wait.delete()
+    except Exception:
+        pass
+    return result
 
 
 # ==================================================================
@@ -141,6 +280,7 @@ async def send_audio_smart(msg: types.Message, urls: list, title: str, caption: 
 def quran_menu_kb():
     return InlineKeyboardMarkup(inline_keyboard=[
         [Btn(text="📚 فهرس السور", callback_data="qi:0"), Btn(text="📄 صفحات المصحف", callback_data="qp:1")],
+        [Btn(text="🔖 أكمل من حيث توقفت", callback_data="qbm")],
         [Btn(text="🎲 آية عشوائية 🎧", callback_data="qrand"), Btn(text="🌟 آية اليوم", callback_data="qday")],
         [Btn(text="🕌 آية الكرسي 🎧", callback_data="qk"), Btn(text="🧠 تحدي القرآن", callback_data="qq:new")],
         [Btn(text="🏠 القائمة الرئيسية", callback_data="main_menu")],
@@ -151,7 +291,7 @@ QURAN_TEXT = (
     "📖 <b>المصحف الشريف</b>\n"
     f"🎧 التلاوة بصوت <b>{RECITER}</b>\n\n"
     "• تصفح السور واقرأ واسمع كل سورة\n"
-    "• 604 صفحة من المصحف المدني للقراءة\n"
+    "• 604 صفحة من المصحف المدني + 🔖 علامة قراءة بتفتكر وقفتك\n• 📚 التفسير الميسر لكل آية\n• 🎧 أي سورة (حتى البقرة) بتتبعت كاملة، والطويلة بتتقسّم أجزاء\n"
     "• آية عشوائية وآية اليوم بالصوت\n"
     "• اكتب: <code>سورة الكهف</code> أو <code>اية 2 255</code> أو <code>صفحة 50</code>\n\n"
     "<i>﴿ وَرَتِّلِ الْقُرْآنَ تَرْتِيلًا ﴾</i>"
@@ -267,24 +407,14 @@ async def read_cb(callback: types.CallbackQuery):
 @quran_router.callback_query(F.data.startswith("qa:"))
 async def surah_audio_cb(callback: types.CallbackQuery):
     n = int(callback.data.split(":")[1])
-    s = SURAHS[n - 1]
     await callback.answer("🎧 جاري تجهيز التلاوة...")
-    wait = await callback.message.answer(f"⏳ بجهزلك سورة <b>{esc(s['name'])}</b> بصوت العفاسي... ثواني 🎧", parse_mode="HTML")
-    kb = InlineKeyboardMarkup(inline_keyboard=[
-        [Btn(text="📖 اقرأ السورة", callback_data=f"qr:{n}:0"), Btn(text="📚 الفهرس", callback_data="qi:0")]])
-    caption = f"🎧 <b>سورة {esc(s['name'])}</b>\n{RECITER}"
-    result = await send_audio_smart(callback.message, surah_audio_urls(n), f"سورة {s['name']}", caption, kb)
-    try:
-        await wait.delete()
-    except Exception:
-        pass
-    if result != "ok":
+    result = await send_surah_audio(callback.message, n)
+    if result in ("fail", "partial"):
         links = InlineKeyboardMarkup(inline_keyboard=[
             [Btn(text="🎧 استمع أونلاين", url=surah_audio_urls(n)[0])],
-            [Btn(text="⬅️ رجوع للسورة", callback_data=f"qs:{n}")]])
-        why = "السورة طويلة وأكبر من حد تيليجرام للرفع" if result == "big" else "الملف مش متاح دلوقتي"
-        await callback.message.answer(
-            f"⚠️ {why}، بس تقدر تسمعها من الرابط 👇", reply_markup=links)
+            [Btn(text="🔁 جرب تاني", callback_data=f"qa:{n}"), Btn(text="⬅️ رجوع", callback_data=f"qs:{n}")]])
+        why = "حصلت مشكلة وسط الإرسال" if result == "partial" else "الملف مش متاح دلوقتي"
+        await callback.message.answer(f"⚠️ {why}، تقدر تسمعها من الرابط أو تجرب تاني 👇", reply_markup=links)
 
 
 # ---------------- آية (نص + صوت) ----------------
@@ -306,11 +436,28 @@ async def send_ayah(msg: types.Message, s: int, a: int, header: str = ""):
         nav.append(Btn(text="الآية التالية ➡️", callback_data=f"qy:{s}:{a + 1}"))
     kb = InlineKeyboardMarkup(inline_keyboard=[
         nav,
+        [Btn(text="📚 التفسير الميسر", callback_data=f"qt:{s}:{a}")],
         [Btn(text="🎲 آية أخرى", callback_data="qrand"), Btn(text="📖 المصحف", callback_data="quran_menu")],
     ])
-    status = await send_audio_smart(msg, [ayah_audio(s, a)], f"{sd['name']} - آية {a}", body, kb)
+    status = await send_audio_smart(msg, [ayah_audio(s, a)], f"{sd['name']} - آية {a}", body, kb, cache_key=f"a{s}:{a}")
     if status != "ok":
         await msg.answer(body, reply_markup=kb, parse_mode="HTML")
+
+
+@quran_router.callback_query(F.data.startswith("qt:"))
+async def tafsir_cb(callback: types.CallbackQuery):
+    await callback.answer()
+    _, s, a = callback.data.split(":")
+    s, a = int(s), int(a)
+    try:
+        j = await fetch_json(f"{API}/ayah/{s}:{a}/ar.muyassar")
+        txt = j["data"]["text"]
+    except Exception as e:
+        log.info("tafsir failed: %s", e)
+        await callback.message.answer("⚠️ التفسير مش متاح دلوقتي، جرب كمان شوية.")
+        return
+    await callback.message.answer(
+        f"📚 <b>التفسير الميسر</b> — سورة {esc(SURAHS[s - 1]['name'])} آية {a}\n\n{esc(txt)}", parse_mode="HTML")
 
 
 @quran_router.callback_query(F.data.startswith("qy:"))
@@ -369,7 +516,20 @@ async def render_page(target, p: int):
 @quran_router.callback_query(F.data.startswith("qp:"))
 async def page_cb(callback: types.CallbackQuery):
     await callback.answer()
-    await render_page(callback, int(callback.data.split(":")[1]))
+    p = max(1, min(604, int(callback.data.split(":")[1])))
+    u = get_user(callback.from_user)
+    if u.get("bookmark") != p:            # علامة القراءة + مهمة اليوم
+        u["bookmark"] = p
+        extras.bump(u, "quran")
+        save_data()
+    await render_page(callback, p)
+
+
+@quran_router.callback_query(F.data == "qbm")
+async def bookmark_cb(callback: types.CallbackQuery):
+    await callback.answer("🔖")
+    u = get_user(callback.from_user)
+    await render_page(callback, int(u.get("bookmark", 1) or 1))
 
 
 # ---------------- أوامر نصية: سورة X / اية S A / صفحة N ----------------
@@ -508,6 +668,7 @@ async def quiz_answer(callback: types.CallbackQuery):
         u["correct"] += 1
         u["streak"] += 1
         u["best_streak"] = max(u["best_streak"], u["streak"])
+        extras.bump(u, "correct")
         lvl = add_points(user, q["pts"], callback.message.chat)
         await callback.answer("✅ صح!")
         text = (f"✅ {persona.correct_line(user)}\n\n✔️ الإجابة: <b>{right}</b>\n➕ <b>{q['pts']}</b> نقطة | 💰 {u['score']}")
