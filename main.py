@@ -2,60 +2,26 @@ import os
 import asyncio
 import logging
 import aiohttp
-import importlib
 from aiohttp import web
 from dotenv import load_dotenv
 
 load_dotenv()
 
 from aiogram import Bot, Dispatcher, Router, types, F
+from aiogram.client.session.aiohttp import AiohttpSession
 from aiogram.filters import CommandStart, Command, CommandObject
 from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton as Btn, BotCommand
 
-from ai_engine import ask_grok_with_buttons, BUTTON_CACHE
+from ai_engine import ask_grok_with_buttons, BUTTON_CACHE, diagnose
 from games_engine import games_router, CHALLENGES
 from mini_games import mini_router
-try:
-    quran_router = importlib.import_module("quran").quran_router
-except (ImportError, AttributeError):
-    logging.warning("Optional Quran module could not be loaded; Quran commands will be unavailable")
-    quran_router = Router()
-try:
-    duas_router = importlib.import_module("duas").duas_router
-except (ImportError, AttributeError):
-    logging.warning("Optional Duas module could not be loaded; Duas commands will be unavailable")
-    duas_router = Router()
-try:
-    _prayer = importlib.import_module("prayer")
-    prayer_router = _prayer.prayer_router
-    adhan_loop = _prayer.adhan_loop
-except (ImportError, AttributeError):
-    logging.warning("Optional prayer module could not be loaded; prayer and adhan features will be unavailable")
-    prayer_router = Router()
-
-    async def adhan_loop(bot):
-        return None
-
-try:
-    extras_router = importlib.import_module("extras").extras_router
-except (ImportError, AttributeError):
-    logging.warning("Optional extras module could not be loaded; extra commands will be unavailable")
-    extras_router = Router()
+from quran import quran_router
+from duas import duas_router
+from prayer import prayer_router, adhan_loop
+from extras import extras_router
 from persona import fun_router, extract_call, call
 from group_admin import admin_router
-try:
-    gate_module = importlib.import_module("gate")
-    gate_router = gate_module.gate_router
-    gate_mw = gate_module.gate_mw
-    GATE_ENABLED = getattr(gate_module, "GATE_ENABLED", False)
-except (ImportError, AttributeError):
-    logging.warning("Optional gate module could not be loaded; subscription gate will be disabled")
-    gate_router = Router()
-
-    async def gate_mw(handler, event, data):
-        return await handler(event, data)
-
-    GATE_ENABLED = False
+from gate import gate_router, gate_mw, GATE_ENABLED, OWNER_ID
 from utils import safe_edit, safe_answer
 
 logging.basicConfig(level=logging.INFO)
@@ -64,7 +30,8 @@ BOT_TOKEN = os.getenv("BOT_TOKEN")
 if not BOT_TOKEN:
     raise SystemExit("❌ متغير BOT_TOKEN غير موجود. أضفه في ملف .env أو في إعدادات Render.")
 
-bot = Bot(token=BOT_TOKEN)
+# timeout كبير عشان رفع أجزاء السور الطويلة (حتى 44MB للجزء) ما يتقطعش
+bot = Bot(token=BOT_TOKEN, session=AiohttpSession(timeout=900))
 dp = Dispatcher()
 
 
@@ -83,7 +50,9 @@ def get_main_menu() -> InlineKeyboardMarkup:
         [Btn(text="🏆 المتصدرين", callback_data="lb"),
          Btn(text="📊 إحصائياتي", callback_data="my_stats")],
         [Btn(text="🎁 هدية يومية", callback_data="daily"),
-         Btn(text="🛒 المتجر", callback_data="shop")],
+         Btn(text="🎡 عجلة الحظ", callback_data="g_wheel")],
+        [Btn(text="🛒 المتجر", callback_data="shop"),
+         Btn(text="✅❌ صح ولا غلط", callback_data="g_tf")],
         [Btn(text="😂 نكتة", callback_data="joke"),
          Btn(text="📚 الأقسام", callback_data="cats")],
         [Btn(text="🛡️ أوامر الإدارة", callback_data="admin_help")],
@@ -102,7 +71,8 @@ WELCOME = (
     "• 📖 المصحف الشريف والتلاوة بصوت الشيخ مشاري العفاسي 🎧\n"
     "• 🕌 مواقيت الصلاة + أذان تلقائي في الجروبات + أذكار وأدعية\n"
     "• 🏆 متصدرين: الجروب والعالم وأقوى الجروبات\n"
-    "• 📋 مهام يومية + 🛒 ألقاب + 🏅 شارات + 🎁 هدايا\n\n"
+    "• 📋 مهام يومية + 🛒 ألقاب + 🏅 شارات + 🎁 هدايا + 🎡 عجلة حظ مجانية\n"
+    "• 💸 تحويل نقاط بالرد: <code>تحويل 50</code>\n\n"
     "اختار من القائمة 👇"
 )
 
@@ -162,6 +132,8 @@ async def show_admin_help(callback: types.CallbackQuery):
         "<code>كمل المثل</code> • <code>لو خيروك</code> • 🎯⚽🏀🎳\n"
         "<code>المتصدرين</code> (الجروب) • <code>متصدري العالم</code> • <code>الجروبات</code> • "
         "<code>نقاطي</code> • <code>هدية</code> • <code>مهام</code> • <code>المتجر</code>\n\n"
+        "🎡 <code>عجلة الحظ</code> • ✅❌ <code>صح ولا غلط</code> • 🔤 <code>خمن الايموجي</code> • "
+        "💸 <code>تحويل 50</code> (بالرد على عضو)\n"
         "😂 <code>نكتة</code> • <code>تحشيش</code> (بالرد) • <code>قيسني</code> • <code>حظي</code>\n\n"
         "⚡ <i>لازم البوت يبقى مشرف بصلاحيات الحذف والحظر، وتقفل Privacy Mode من BotFather.</i>"
     )
@@ -210,6 +182,15 @@ async def cmd_ask(message: types.Message, command: CommandObject):
     wait_msg = await message.reply("⏳ لحظة أفكر...")
     answer, kb = await ask_grok_with_buttons(command.args, message.from_user.id, message.from_user.first_name)
     await safe_edit(wait_msg, answer, kb, parse_mode="Markdown")
+
+
+@ai_router.message(Command("aitest"))
+async def cmd_aitest(message: types.Message):
+    if OWNER_ID and message.from_user.id != OWNER_ID:
+        return
+    wait = await message.reply("🛠️ بفحص الذكاء الاصطناعي... ثواني")
+    report = await diagnose()
+    await safe_edit(wait, report, parse_mode=None)
 
 
 @ai_router.message(group_ai_filter)
@@ -300,6 +281,8 @@ async def main():
         BotCommand(command="shop", description="متجر الألقاب"),
         BotCommand(command="slot", description="سلوت"),
         BotCommand(command="joke", description="نكتة"),
+        BotCommand(command="wheel", description="عجلة الحظ"),
+        BotCommand(command="tf", description="صح ولا غلط"),
         BotCommand(command="ask", description="اسأل الذكاء الاصطناعي"),
     ])
     logging.info("Gate enabled: %s", GATE_ENABLED)
@@ -307,4 +290,4 @@ async def main():
 
 
 if __name__ == "__main__":
-    asyncio.run(main()) 
+    asyncio.run(main())
