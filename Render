@@ -14,13 +14,21 @@ services:
       - key: GROK_API_KEY
         sync: false
       - key: GROK_MODEL
-        value: grok-3
+        value: ""
+      - key: GEMINI_API_KEY
+        sync: false
+      - key: GROQ_API_KEY
+        sync: false
       - key: ANTI_LINKS
         value: "1"
       - key: CHANNEL_ID
         value: "-1003945976264"
       - key: CHANNEL_LINK
         value: "https://t.me/+cCFIWnW4qXIzM2Q0"
+      - key: GROUP_ID
+        value: "-1004316047539"
+      - key: GROUP_LINK
+        value: "https://t.me/+wkiUwECX5slhZDM8"
       - key: GATE_ENABLED
         value: "1"
       - key: OWNER_ID
