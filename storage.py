@@ -2,12 +2,13 @@ import os
 import json
 import copy
 import logging
+from datetime import datetime, timezone
 from aiogram import types
 
 log = logging.getLogger("mox.storage")
 
 DATA_FILE = os.getenv("DATA_FILE", "scores.json")
-DATA: dict = {"users": {}, "groups": {}, "adhan": {}}
+DATA: dict = {"users": {}, "groups": {}, "adhan": {}, "audio": {}}
 
 LEVELS = [
     (0, "مبتدئ", "🌱"), (100, "هاوي", "🌿"), (300, "محترف", "🔥"),
@@ -18,6 +19,7 @@ USER_DEFAULTS = {
     "name": "لاعب", "score": 0, "correct": 0, "wrong": 0, "streak": 0,
     "best_streak": 0, "answered": [], "last_daily": "", "daily_streak": 0,
     "wins": 0, "games": 0, "quest": {}, "titles": [], "title": "",
+    "last_spin": 0, "bookmark": 1, "week": {"id": "", "pts": 0},
 }
 
 
@@ -40,6 +42,7 @@ def load_data():
         raw = {"users": {}, "groups": {}}
     raw.setdefault("groups", {})
     raw.setdefault("adhan", {})
+    raw.setdefault("audio", {})
     DATA.clear()
     DATA.update(raw)
 
@@ -72,11 +75,21 @@ def peek_user(uid: int):
     return DATA["users"].get(str(uid))
 
 
+def week_id() -> str:
+    return datetime.now(timezone.utc).strftime("%G-W%V")
+
+
 def add_points(user: types.User, pts: int, chat: types.Chat = None):
     """يضيف/يخصم نقاط. يرجع المستوى الجديد لو اللاعب طلع مستوى."""
     u = get_user(user)
     old = level_of(u["score"])[0]
     u["score"] = max(0, u["score"] + pts)
+    if pts > 0:
+        w = u.get("week") or {}
+        if w.get("id") != week_id():
+            w = {"id": week_id(), "pts": 0}
+        w["pts"] += pts
+        u["week"] = w
 
     if pts > 0 and chat is not None and chat.type in ("group", "supergroup"):
         g = DATA["groups"].setdefault(str(chat.id), {"title": chat.title or "جروب", "scores": {}})
@@ -125,3 +138,21 @@ def rank_in(rows, uid: int):
 
 def title_of(uid) -> str:
     return DATA["users"].get(str(uid), {}).get("title", "") or ""
+
+
+def top_week(n=10):
+    wk = week_id()
+    rows = [(uid, u) for uid, u in DATA["users"].items()
+            if (u.get("week") or {}).get("id") == wk and u["week"]["pts"] > 0]
+    rows.sort(key=lambda kv: kv[1]["week"]["pts"], reverse=True)
+    return rows[:n], rows
+
+
+# ---- كاش ملفات الصوت (file_id) عشان الإرسال المرة الجاية يبقى فوري ----
+def audio_get(key: str):
+    return DATA["audio"].get(key)
+
+
+def audio_put(key: str, ids: list):
+    DATA["audio"][key] = ids
+    save_data()
