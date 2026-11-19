@@ -1,0 +1,33 @@
+services:
+  - type: web
+    name: mox-assistant
+    runtime: python
+    plan: free
+    buildCommand: pip install -r requirements.txt
+    startCommand: python main.py
+    healthCheckPath: /
+    envVars:
+      - key: PYTHON_VERSION
+        value: 3.12.3
+      - key: BOT_TOKEN
+        sync: false
+      - key: GROK_API_KEY
+        sync: false
+      - key: GROK_MODEL
+        value: grok-3
+      - key: ANTI_LINKS
+        value: "1"
+      - key: CHANNEL_ID
+        value: "-1003945976264"
+      - key: CHANNEL_LINK
+        value: "https://t.me/+cCFIWnW4qXIzM2Q0"
+      - key: GATE_ENABLED
+        value: "1"
+      - key: OWNER_ID
+        sync: false
+    # لو عندك خطة مدفوعة وعاوز النقاط تتحفظ للأبد، فعّل Disk وغيّر DATA_FILE:
+    # disk:
+    #   name: mox-data
+    #   mountPath: /data
+    #   sizeGB: 1
+    # وضيف envVar:  DATA_FILE = /data/scores.json
